@@ -12,7 +12,7 @@ use sdl2::audio::AudioQueue;
 use crate::AUDIO_SAMPLE_RATE;
 use crate::FPS;
 
-pub enum WaveType {
+pub enum WaveForm {
     Square,
     Sawtooth,
     Triangle,
@@ -20,59 +20,61 @@ pub enum WaveType {
 }
 
 pub struct Wave<'a> {
-    pub period: i16,
-    pub slope: i16,
-    pub phase_inc: i16,
-    pub phase: i16,
-    pub volume: i16,
-    pub wave_form: WaveType,
-    pub out_file: &'a mut File,
+    phase_inc: f64,
+    phase: f64,
+    volume: f64,
+    gen_function: fn(f64, f64) -> f64,
+    out_file: &'a mut File,
 }
 
-fn gen_square_wave(period: i16, phase: i16, volume: i16) -> i16 {
-    return if (phase / period) % 2 == 0 {
-        volume
-    } else {
-        -volume
-    };
+pub fn default_wave(output_file: &mut File) -> Wave {
+    Wave {
+        phase_inc: 0.0,
+        phase: 0.0,
+        volume: 10_000.0,
+        gen_function: gen_sawtooth_wave,
+        out_file: output_file,
+    }
 }
 
-fn gen_sawtooth_wave(period: i16, slope: i16, phase: i16, volume: i16) -> i16 {
-    return if phase < (period / 2) {
-        slope * phase
-    } else {
-        (slope * phase) - volume
-    };
+fn polyblep(dt: f64, mut t: f64) -> f64 {
+    if t < dt {
+        t /= dt;
+        return t + t - t * t - 1.0;
+    } else if t > 1.0 - dt {
+        t = (t - 1.0) / dt;
+        return t * t + t + t + 1.0;
+    }
+
+    return 0.0;
+}
+
+fn gen_square_wave(phase: f64, _phase_inc: f64) -> f64 {
+    return if phase <= 0.5 { 1.0 } else { -1.0 };
+}
+
+fn gen_sawtooth_wave(phase: f64, phase_inc: f64) -> f64 {
+    let mut value = (2.0 * phase) - 1.0;
+    value -= polyblep(phase_inc, phase);
+    return value;
 }
 
 impl AudioCallback for Wave<'_> {
-    type Channel = i16;
+    type Channel = f32;
 
-    fn callback(&mut self, out: &mut [i16]) {
+    fn callback(&mut self, out: &mut [f32]) {
         for x in out.iter_mut() {
-            let result: i16;
-            match self.wave_form {
-                WaveType::Square => {
-                    result = gen_square_wave(self.period, self.phase, self.volume);
-                }
-                WaveType::Sawtooth => {
-                    result = gen_sawtooth_wave(self.period, self.slope, self.phase, self.volume);
-                }
-                WaveType::Triangle => {
-                    result = gen_sawtooth_wave(self.period, self.slope, self.phase, self.volume);
-                }
-                WaveType::Noise => {
-                    result = gen_sawtooth_wave(self.period, self.slope, self.phase, self.volume);
-                }
+            *x = ((self.gen_function)(self.phase, self.phase_inc) * self.volume) as f32;
+            self.phase += self.phase_inc;
+            if self.phase > 1.0 {
+                self.phase -= 1.0
             }
-            *x = result;
-            self.phase = (self.phase + self.phase_inc) % self.period;
             //println!(
             //    "Volume: {}, phase: {}, result: {}",
             //    self.volume, self.phase, result
             //);
             self.out_file
-                .write_all(&result.to_le_bytes())
+                .write_all(&(*x as i16).to_le_bytes())
                 .expect("Failed to write audio to file");
         }
     }
@@ -156,13 +158,9 @@ impl AudioState<'_> {
         let mut wave = self.device.lock();
 
         // period will always be a small positive number so casting to i16 is fine
-        wave.period = (AUDIO_SAMPLE_RATE / i32::from(self.frequency))
-            .try_into()
-            .expect("Frequency was out of bounds");
+        wave.phase_inc = frequency as f64 / AUDIO_SAMPLE_RATE as f64;
 
-        wave.slope = wave.volume / wave.period;
-
-        println!("Set frequency: {}, period: {}", frequency, wave.period);
+        println!("Set frequency: {}", frequency);
     }
 
     pub fn is_finished(&mut self) -> bool {
@@ -174,8 +172,9 @@ impl AudioState<'_> {
         self.playing = false;
         self.device.pause();
 
-        let mut a = self.device.lock();
-        a.out_file.sync_all().expect("Failed to sync audio file");
+        let mut wave = self.device.lock();
+        wave.phase = 0.0;
+        wave.out_file.sync_all().expect("Failed to sync audio file");
     }
 
     pub fn start(&mut self) {
@@ -184,6 +183,6 @@ impl AudioState<'_> {
 
     pub fn set_waveform(&mut self) {
         let mut a = self.device.lock();
-        a.wave_form = WaveType::Sawtooth
+        a.gen_function = gen_sawtooth_wave;
     }
 }

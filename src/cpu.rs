@@ -572,8 +572,6 @@ fn draw_sprite(state: &mut CPU, x_coord: i16, y_coord: i16, sprite_addr: u16) {
         x_coord,
         y_coord
     );
-    let mut current_x = x_coord;
-    let mut current_y = y_coord;
 
     let y_range = std::ops::Range {
         start: 0,

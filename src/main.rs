@@ -26,7 +26,7 @@ const DOT_SIZE_IN_PXS: u32 = 2;
 const CLOCK_RATE: u32 = 1000000;
 const FPS: u32 = 60;
 const FRAME_CYCLES: u32 = CLOCK_RATE / FPS;
-const AUDIO_SAMPLE_RATE: i32 = 48_000;
+const AUDIO_SAMPLE_RATE: i32 = 44_100;
 
 #[binread]
 pub struct ROMHeader {
@@ -74,16 +74,9 @@ pub fn parse_rom(path: String) -> Result<(), String> {
     let mut output_file =
         File::create("cpu_audio_output").expect("Failed to open audio file for writing");
 
-    let mut audio_device =
-        audio_subsystem.open_playback(None, &desired_spec, |spec| audio::Wave {
-            period: 0,
-            slope: 0,
-            phase_inc: 1,
-            phase: 0,
-            volume: 10_000,
-            wave_form: audio::WaveType::Sawtooth,
-            out_file: &mut output_file,
-        })?;
+    let mut audio_device = audio_subsystem.open_playback(None, &desired_spec, |spec| {
+        audio::default_wave(&mut output_file)
+    })?;
 
     let mut audio_state = audio::AudioState::new(&mut audio_device);
 
