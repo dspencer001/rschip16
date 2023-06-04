@@ -2,6 +2,10 @@
 macro_rules! dbg_println {
     ($($arg:tt)*) => (#[cfg(debug_assertions)] println!($($arg)*));
 }
+macro_rules! instr_dbg_println {
+    ($($arg:tt)*) => {};
+}
+
 extern crate sdl2;
 
 mod audio;
@@ -26,7 +30,7 @@ const DOT_SIZE_IN_PXS: u32 = 2;
 const CLOCK_RATE: u32 = 1000000;
 const FPS: u32 = 60;
 const FRAME_CYCLES: u32 = CLOCK_RATE / FPS;
-const AUDIO_SAMPLE_RATE: i32 = 44_100;
+const AUDIO_SAMPLE_RATE: i32 = 48_000;
 
 #[binread]
 pub struct ROMHeader {
@@ -39,26 +43,28 @@ pub struct ROMHeader {
 }
 
 pub fn parse_rom(path: String) -> Result<(), String> {
-    let mut rom = File::open(path).expect("Should have been able to open the file");
-
     let mut header = [0; 16];
-
-    rom.read(header.as_mut_slice())
-        .expect("Should have been able to read the rom");
-
-    let has_header = [header[0], header[1], header[2], header[3]]
-        == ['C' as u8, 'H' as u8, '1' as u8, '6' as u8];
-
+    let mut has_header: bool;
     let mut mem = [0; 65536];
-    if has_header {
-        rom.seek(std::io::SeekFrom::Start(16))
-            .expect("Should have been able to seek to 16 in the rom");
-    } else {
-        rom.seek(std::io::SeekFrom::Start(0))
-            .expect("Should have been able to seek to 16 in the rom");
+
+    {
+        let mut rom = File::open(path).expect("Should have been able to open the file");
+        rom.read(header.as_mut_slice())
+            .expect("Should have been able to read the rom");
+
+        has_header = [header[0], header[1], header[2], header[3]]
+            == ['C' as u8, 'H' as u8, '1' as u8, '6' as u8];
+
+        if has_header {
+            rom.seek(std::io::SeekFrom::Start(16))
+                .expect("Should have been able to seek to 16 in the rom");
+        } else {
+            rom.seek(std::io::SeekFrom::Start(0))
+                .expect("Should have been able to seek to 16 in the rom");
+        }
+        rom.read(mem.as_mut_slice())
+            .expect("Should have been able to read the rom");
     }
-    rom.read(mem.as_mut_slice())
-        .expect("Should have been able to read the rom");
 
     let sdl_context = sdl2::init()?;
     let video_subsystem = sdl_context.video()?;
@@ -68,7 +74,7 @@ pub fn parse_rom(path: String) -> Result<(), String> {
         freq: Some(AUDIO_SAMPLE_RATE),
         channels: Some(1),
         // mono  -
-        samples: None, // default sample size
+        samples: Some(1024),
     };
 
     let mut output_file =
@@ -100,7 +106,7 @@ pub fn parse_rom(path: String) -> Result<(), String> {
     if has_header {
         let mut reader = Cursor::new(header);
         let header: ROMHeader = reader.read_le().unwrap();
-        dbg_println!(
+        instr_dbg_println!(
             "Header: magic_number: {:#02X?}\nreserved: {:#02X?}\nspec: {:#02X?}\nrom_size: {:#02X?}\nstart_address: {:#02X?}\ncrc: {:#02X?}",
             header.magic_number,
             header.reserved,
