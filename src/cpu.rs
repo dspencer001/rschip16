@@ -10,6 +10,7 @@ use sdl2::EventPump;
 use crate::audio::AudioState;
 use crate::renderer::Renderer;
 use crate::{audio, FRAME_CYCLES};
+use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 
 const SCREEN_SIZE_X: u16 = 320;
 const SCREEN_SIZE_Y: u16 = 240;
@@ -19,7 +20,9 @@ const FRAME_DURATION: Duration = Duration::new(0, 1_000_000_000u32 / 60);
 type Instruction = [u8; 4];
 
 fn hhll(instruction: &Instruction) -> u16 {
-    return (u16::from(instruction[3]) << 8) + u16::from(instruction[2]);
+    return (&instruction[2..4])
+        .read_u16::<LE>()
+        .expect("Failed to read instruction hhll");
 }
 
 fn rx_ry(instruction: &Instruction) -> (usize, usize) {
@@ -37,7 +40,7 @@ fn rx_ry_rz(instruction: &Instruction) -> (usize, usize, usize) {
     return (
         usize::from(instruction[1] & 0xF),
         usize::from((instruction[1] & 0xF0) >> 4),
-        usize::from(instruction[2 & 0xF]),
+        usize::from(instruction[2] & 0xF),
     );
 }
 
@@ -160,7 +163,7 @@ fn snp_rx_hhll(state: &mut CPU, instruction: &Instruction) -> Result<(), String>
     instr_dbg_println!("snp_rx_hhll");
     let rx = rx(instruction);
     let addr = (state.registers[rx] as usize) & 0xFFFF;
-    let freq = ((state.mem[addr + 1] as u16) << 8) + state.mem[addr] as u16;
+    let freq = load_mem(state, addr);
     instr_dbg_println!("addr: {:#02X}, hz: {}", addr, freq);
     instr_dbg_println!("freq: {}hz", freq);
     state.audio_state.play_custom_sound(freq, hhll(instruction));
@@ -238,8 +241,7 @@ fn jme_rx_ry_hhll(state: &mut CPU, instruction: &Instruction) -> Result<(), Stri
 
 fn call_hhll(state: &mut CPU, instruction: &Instruction) -> Result<(), String> {
     instr_dbg_println!("call_hhll");
-    state.mem[state.sp] = (state.pc & 0xFF) as u8;
-    state.mem[state.sp + 1] = (state.pc >> 8) as u8;
+    store_mem(state, state.pc, state.sp);
     state.sp += 2;
     state.pc = hhll(instruction);
     state.stack.push(state.pc);
@@ -250,7 +252,7 @@ fn ret(state: &mut CPU, _instruction: &Instruction) -> Result<(), String> {
     instr_dbg_println!("ret");
     state.sp -= 2;
     let addr = state.sp;
-    state.pc = ((state.mem[addr + 1] as u16) << 8) + state.mem[addr] as u16;
+    state.pc = load_mem(state, addr);
     state.stack.pop();
     Ok(())
 }
@@ -267,8 +269,7 @@ fn cx_hhll(state: &mut CPU, instruction: &Instruction) -> Result<(), String> {
         hhll(instruction)
     );
     if test_cond(state, instruction)? {
-        state.mem[state.sp] = (state.pc & 0xFF) as u8;
-        state.mem[state.sp + 1] = (state.pc >> 8) as u8;
+        store_mem(state, state.pc, state.sp);
         state.sp += 2;
         state.pc = hhll(instruction);
         state.stack.push(state.pc);
@@ -279,8 +280,7 @@ fn cx_hhll(state: &mut CPU, instruction: &Instruction) -> Result<(), String> {
 fn call_rx(state: &mut CPU, instruction: &Instruction) -> Result<(), String> {
     instr_dbg_println!("call_rx");
     let rx = rx(instruction);
-    state.mem[state.sp] = (state.pc & 0xFF) as u8;
-    state.mem[state.sp + 1] = (state.pc >> 8) as u8;
+    store_mem(state, state.pc, state.sp);
     state.sp += 2;
     state.pc = state.registers[rx] as u16;
     state.stack.push(state.pc);
@@ -303,7 +303,7 @@ fn ldi_sp_hhll(state: &mut CPU, instruction: &Instruction) -> Result<(), String>
 fn ldm_rx_hhll(state: &mut CPU, instruction: &Instruction) -> Result<(), String> {
     instr_dbg_println!("ldm_rx_hhll");
     let (rx, _) = rx_ry(instruction);
-    state.registers[rx] = load_mem(state, hhll(instruction) as usize);
+    state.registers[rx] = load_mem(state, hhll(instruction) as usize) as i16;
 
     instr_dbg_println!("Set register {:#02X?} to {:#02X?}", rx, state.registers[rx]);
 
@@ -313,7 +313,7 @@ fn ldm_rx_hhll(state: &mut CPU, instruction: &Instruction) -> Result<(), String>
 fn ldm_rx_ry(state: &mut CPU, instruction: &Instruction) -> Result<(), String> {
     instr_dbg_println!("ldm_rx_ry");
     let (rx, ry) = rx_ry(instruction);
-    state.registers[rx] = load_mem(state, state.registers[ry] as usize);
+    state.registers[rx] = load_mem(state, state.registers[ry] as usize) as i16;
 
     instr_dbg_println!(
         "Set register {:#02X?} to [register {:#02X?}] ([{:#02X?}]): {:#02X?}",
@@ -710,7 +710,7 @@ fn pushf(state: &mut CPU, _instruction: &Instruction) -> Result<(), String> {
     if state.flags.N {
         val |= 0b10000000;
     }
-    state.mem[state.sp + 1] = val;
+    state.mem[state.sp] = val;
 
     state.sp += 2;
     Ok(())
@@ -904,32 +904,36 @@ fn push_reg(state: &mut CPU, register: usize) {
         state.registers[register]
     );
 
-    state.mem[state.sp] = (state.registers[register] & 0xFF) as u8;
-    state.mem[state.sp + 1] = (state.registers[register] >> 8) as u8;
+    store_mem(state, state.registers[register] as u16, state.sp);
     state.sp += 2;
 }
 
 fn pop_reg(state: &mut CPU, register: usize) {
     state.sp -= 2;
     let addr = state.sp;
-    state.registers[register] =
-        (((state.mem[addr + 1] as u16) << 8) + state.mem[addr] as u16) as i16;
+    state.registers[register] = load_mem(state, addr) as i16;
     instr_dbg_println!(
         "Popped r{:X}({}) from stack",
         register,
         state.registers[register]
     );
 }
-fn load_mem(state: &mut CPU, addr: usize) -> i16 {
+fn load_mem(state: &mut CPU, addr: usize) -> u16 {
     let a = addr & 0xFFFF;
-    return ((u16::from(state.mem[a + 1]) << 8) + u16::from(state.mem[a])) as i16;
+    return (&state.mem[a..(a + 2)])
+        .read_u16::<LE>()
+        .expect("Failed to read from cpu state mem");
 }
 
 fn store_mem(state: &mut CPU, val: u16, addr: usize) {
     let a = addr & 0xFFFF;
-    state.mem[a] = (val & 0xFF) as u8;
-    state.mem[a + 1] = (val >> 8) as u8;
+    (&mut state.mem[a..(a + 2)])
+        .write_u16::<LE>(val)
+        .expect("Failed to write to mem");
 
+    if (load_mem(state, a) != val) {
+        println!("Failed at writing with write_u16");
+    }
     instr_dbg_println!(
         "Set [{:#02X?}] to {:#02X?}, {:#02X?}",
         addr,
@@ -1219,7 +1223,7 @@ impl CPU<'_> {
     }
 
     pub fn set_pc(&mut self, address: [u8; 2]) {
-        self.pc = (address[0] as u16) << 8 + address[1] as u16;
+        self.pc = (address[1] as u16) << 8 + address[0] as u16;
     }
 
     pub fn run(&mut self, renderer: &mut Renderer) -> Result<(), String> {
@@ -1240,7 +1244,7 @@ impl CPU<'_> {
                 && next_inst[0] != 0x2
             {
                 instr_dbg_println!(
-                    "{:x}: {:x} {:x} {:x} {:x}",
+                    "{:X}: {:X} {:X} {:X} {:X}",
                     self.pc,
                     next_inst[0],
                     next_inst[1],
