@@ -718,7 +718,7 @@ fn pushf(state: &mut CPU, _instruction: &Instruction) -> Result<(), String> {
 fn popf(state: &mut CPU, instruction: &Instruction) -> Result<(), String> {
     instr_dbg_println!("popf");
     state.sp -= 2;
-    let val = state.mem[state.sp + 1];
+    let val = state.mem[state.sp];
 
     state.flags.C = 0b00000010 & val > 0;
     state.flags.Z = 0b00000100 & val > 0;
