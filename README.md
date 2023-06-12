@@ -1,6 +1,8 @@
 # rschip16
 A chip16 emulator implemented in Rust
 
+Chip16 specification: https://github.com/chip16/chip16
+
 Roms can be found in the ROM pack included in the repo.
 
 ## Building
